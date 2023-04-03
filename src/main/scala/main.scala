@@ -1,5 +1,5 @@
 import Assignment.QueueMonitor
-import ProducerConsumer.{Consumer, Producer}
+import ProducerConsumer.{Consumer, ConsumerThread, Producer}
 import Queue.CloseableQueue
 
 import java.nio.file.{Files, Path}
@@ -34,18 +34,21 @@ end Queue
 
 object ProducerConsumer:
   import Queue.*
-  trait Producer[T](queue: CloseableQueue[T]) extends Thread:
+  trait Producer[T](queue: CloseableQueue[T]):
     final def produce(t: T): Unit = queue.enqueue(t)
 
-  trait Consumer[T](queue: CloseableQueue[T]) extends Thread:
+  trait Consumer[T]:
     protected def consume(t: T): Unit
     protected def onCompleted(): Unit = ()
+
+  trait ConsumerThread[T](queue: CloseableQueue[T]) extends Thread with Consumer[T]:
     final override def run(): Unit =
       while queue.isOpen do
         queue.dequeue() match
           case Some(t) => consume(t)
           case None => ()
       onCompleted()
+end ProducerConsumer
 
 object Assignment:
   import Queue.*
@@ -81,24 +84,24 @@ object Assignment:
     var totalLines = 0
     def addLines(lines: Int): Unit = synchronized { totalLines += lines }
 
-  class FilesProducer(root: Path, queue: CloseableQueue[Path]) extends Producer[Path](queue):
+  class FilesProducer(root: Path, queue: CloseableQueue[Path]) extends Thread with Producer[Path](queue):
     override def run(): Unit =
       val files = Files.walk(root).filter(_.toString.endsWith(".java"))
       files.forEach(produce)
       queue.close()
 
-  class FilesConsumer(queue: CloseableQueue[Path], stats: StatsQueue) extends Consumer[Path](queue):
+  class FilesConsumer(queue: CloseableQueue[Path], stats: StatsQueue) extends ConsumerThread[Path](queue) with Producer[Stats](stats):
     override def onCompleted(): Unit = stats.close()
     override def consume(file: Path): Unit =
       try
         val source = fromFile(file.toFile)
         val lines = source.getLines().size
-        stats.enqueue(Stats(file, lines))
+        produce(Stats(file, lines))
         source.close()
       catch
         case e: Exception => println(s"Error while processing $file: $e")
 
-  class StatsConsumer(config: StatsConfiguration, queue: CloseableQueue[Stats], statsMonitor: StatsMonitor) extends Consumer[Stats](queue):
+  class StatsConsumer(config: StatsConfiguration, queue: CloseableQueue[Stats], statsMonitor: StatsMonitor) extends ConsumerThread[Stats](queue):
     override def consume(stats: Stats): Unit =
       statsMonitor.addLines(stats.lines)
       println(s"File ${stats.file} has ${stats.lines} lines")
